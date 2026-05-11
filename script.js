@@ -26,11 +26,13 @@ const DEFAULT_PRODUCTS = [
     { id: 24, name: "Quiche lorraine", price: 5.20, category: "snacks", color: "#fffde7" },
 ];
 
-const VAT_RATE = 0.20;
+// TVA supprimée (prix TTC)
+// const VAT_RATE = 0.20;
 
 // ===== STATE =====
 let products = [];
 let cart = [];
+let transactions = [];
 let nextProductId = 100;
 let activeCategory = "all";
 let editMode = false;
@@ -41,6 +43,7 @@ let selectedPaymentMethod = null;
 // ===== INIT =====
 function init() {
     loadProducts();
+    loadTransactions();
     renderProducts();
     bindEvents();
     updateCart();
@@ -71,6 +74,17 @@ function loadCart() {
 
 function saveCart() {
     localStorage.setItem("pos_cart", JSON.stringify(cart));
+}
+
+function loadTransactions() {
+    const saved = localStorage.getItem("pos_transactions");
+    if (saved) {
+        transactions = JSON.parse(saved);
+    }
+}
+
+function saveTransactions() {
+    localStorage.setItem("pos_transactions", JSON.stringify(transactions));
 }
 
 // ===== RENDERING =====
@@ -184,19 +198,15 @@ function renderCart() {
 }
 
 function updateTotals() {
-    let subtotal = 0;
+    let total = 0;
     cart.forEach(item => {
         const product = products.find(p => p.id === item.id);
         if (product) {
-            subtotal += product.price * item.qty;
+            total += product.price * item.qty;
         }
     });
 
-    const vat = subtotal * VAT_RATE;
-    const total = subtotal + vat;
-
-    document.getElementById("subtotal").textContent = formatPrice(subtotal);
-    document.getElementById("vat").textContent = formatPrice(vat);
+    document.getElementById("total-amount").textContent = formatPrice(total);
 
     const chargeBtn = document.getElementById("charge-btn");
     chargeBtn.querySelector(".charge-text").textContent = `Encaisser ${formatPrice(total)} €`;
@@ -294,6 +304,12 @@ function bindEvents() {
             showToast("Mode édition désactivé");
         }
     });
+
+    // Archives
+    const archivesBtn = document.getElementById("archives-btn");
+    if (archivesBtn) {
+        archivesBtn.addEventListener("click", openArchivesModal);
+    }
 
     // Clear cart
     document.getElementById("clear-cart-btn").addEventListener("click", () => {
@@ -407,6 +423,11 @@ function bindEvents() {
             document.querySelectorAll(".modal-overlay.visible").forEach(m => m.classList.remove("visible"));
         }
     });
+
+    // Archives Modals
+    document.getElementById("modal-archives-close").addEventListener("click", () => closeModal("modal-archives"));
+    document.getElementById("modal-detail-close").addEventListener("click", () => closeModal("modal-transaction-detail"));
+    document.getElementById("modal-detail-cancel").addEventListener("click", () => closeModal("modal-transaction-detail"));
 }
 
 // ===== MODAL HELPERS =====
@@ -568,6 +589,24 @@ function validatePayment() {
         other: "Paiement accepté"
     };
 
+    // Enregistrer la transaction
+    const transaction = {
+        id: "txn_" + Date.now(),
+        timestamp: Date.now(),
+        items: cart.map(item => {
+            const product = products.find(p => p.id === item.id);
+            return {
+                name: product ? product.name : "Produit inconnu",
+                price: product ? product.price : 0,
+                qty: item.qty
+            };
+        }),
+        total: total,
+        paymentMethod: selectedPaymentMethod
+    };
+    transactions.unshift(transaction);
+    saveTransactions();
+
     closePaymentModal();
 
     // Show success
@@ -605,12 +644,12 @@ function openQuickAddModal() {
 
 // ===== UTILITIES =====
 function getCartTotal() {
-    let subtotal = 0;
+    let total = 0;
     cart.forEach(item => {
         const product = products.find(p => p.id === item.id);
-        if (product) subtotal += product.price * item.qty;
+        if (product) total += product.price * item.qty;
     });
-    return subtotal + subtotal * VAT_RATE;
+    return total;
 }
 
 function formatPrice(amount) {
@@ -634,6 +673,141 @@ function showToast(message) {
         toast.classList.add("removing");
         setTimeout(() => toast.remove(), 300);
     }, 2500);
+}
+
+// ===== ARCHIVES =====
+function openArchivesModal() {
+    renderArchives();
+    openModal("modal-archives");
+}
+
+function renderArchives() {
+    const listContainer = document.getElementById("archives-list");
+    const summaryContainer = document.getElementById("archives-summary");
+    
+    listContainer.innerHTML = "";
+    
+    if (transactions.length === 0) {
+        summaryContainer.innerHTML = "<p style='text-align:center; color:var(--text-muted); width:100%'>Aucune vente enregistrée.</p>";
+        listContainer.innerHTML = "";
+        return;
+    }
+
+    // Grouper par date (YYYY-MM-DD)
+    const groups = {};
+    let todayTotal = 0;
+    let todayCount = 0;
+    
+    const todayStr = new Date().toLocaleDateString("fr-FR");
+
+    transactions.forEach(txn => {
+        const dateObj = new Date(txn.timestamp);
+        const dateStr = dateObj.toLocaleDateString("fr-FR");
+        
+        if (!groups[dateStr]) {
+            groups[dateStr] = [];
+        }
+        groups[dateStr].push(txn);
+
+        if (dateStr === todayStr) {
+            todayTotal += txn.total;
+            todayCount++;
+        }
+    });
+
+    // Summary
+    summaryContainer.innerHTML = `
+        <div class="summary-stat">
+            <span class="summary-label">Ventes du jour</span>
+            <span class="summary-value">${todayCount}</span>
+        </div>
+        <div class="summary-stat">
+            <span class="summary-label">CA du jour</span>
+            <span class="summary-value">${formatPrice(todayTotal)} €</span>
+        </div>
+    `;
+
+    const methodNames = {
+        card: "Carte",
+        cash: "Espèces",
+        other: "Autre"
+    };
+
+    // Render list
+    Object.keys(groups).forEach(dateStr => {
+        const groupDiv = document.createElement("div");
+        groupDiv.className = "archive-group";
+        
+        const dateHeader = document.createElement("div");
+        dateHeader.className = "archive-date";
+        dateHeader.textContent = dateStr === todayStr ? "Aujourd'hui" : dateStr;
+        groupDiv.appendChild(dateHeader);
+
+        groups[dateStr].forEach(txn => {
+            const card = document.createElement("div");
+            card.className = "transaction-card";
+            card.onclick = () => showTransactionDetail(txn.id);
+
+            const timeStr = new Date(txn.timestamp).toLocaleTimeString("fr-FR", { hour: '2-digit', minute: '2-digit' });
+            
+            let itemsPreview = txn.items.map(i => `${i.qty}x ${i.name}`).join(", ");
+            if (itemsPreview.length > 40) itemsPreview = itemsPreview.substring(0, 37) + "...";
+
+            card.innerHTML = `
+                <div class="transaction-info">
+                    <span class="transaction-time">${timeStr}</span>
+                    <span class="transaction-items">${escapeHtml(itemsPreview)}</span>
+                </div>
+                <div class="transaction-amount-method">
+                    <span class="transaction-total">${formatPrice(txn.total)} €</span>
+                    <span class="transaction-method">${methodNames[txn.paymentMethod] || "Inconnu"}</span>
+                </div>
+            `;
+            groupDiv.appendChild(card);
+        });
+
+        listContainer.appendChild(groupDiv);
+    });
+}
+
+function showTransactionDetail(txnId) {
+    const txn = transactions.find(t => t.id === txnId);
+    if (!txn) return;
+
+    const body = document.getElementById("transaction-detail-body");
+    
+    const dateObj = new Date(txn.timestamp);
+    const dateStr = dateObj.toLocaleDateString("fr-FR") + " à " + dateObj.toLocaleTimeString("fr-FR");
+
+    const methodNames = {
+        card: "Carte bancaire",
+        cash: "Espèces",
+        other: "Autre moyen de paiement"
+    };
+
+    let itemsHtml = txn.items.map(item => `
+        <div class="detail-item">
+            <span>${item.qty}x ${escapeHtml(item.name)}</span>
+            <span>${formatPrice(item.price * item.qty)} €</span>
+        </div>
+    `).join("");
+
+    body.innerHTML = `
+        <div style="margin-bottom: 20px;">
+            ${itemsHtml}
+        </div>
+        <div class="detail-total">
+            <span>Total</span>
+            <span>${formatPrice(txn.total)} €</span>
+        </div>
+        <div class="detail-meta">
+            <span>Moyen de paiement : <strong>${methodNames[txn.paymentMethod] || txn.paymentMethod}</strong></span>
+            <span>Date : ${dateStr}</span>
+            <span style="color:var(--text-muted); font-size:11px; margin-top:4px;">ID: ${txn.id}</span>
+        </div>
+    `;
+
+    openModal("modal-transaction-detail");
 }
 
 // ===== START =====
